@@ -2221,10 +2221,15 @@ public class PlanFragmentBuilder {
             scanNode.setScanOptimizeOption(node.getScanOptimizeOption());
             try {
                 scanNode.assignNodes();
+                if (scanNode.getEsTable().isQueryTable()) {
+                    // native query: single scan range, no shard selection
+                    scanNode.setShardScanRanges(scanNode.computeQueryTableScanRanges());
+                } else {
+                    scanNode.setShardScanRanges(scanNode.computeShardLocations(node.getSelectedIndex()));
+                }
             } catch (StarRocksException e) {
                 throw new StarRocksPlannerException(e.getMessage(), INTERNAL_ERROR);
             }
-            scanNode.setShardScanRanges(scanNode.computeShardLocations(node.getSelectedIndex()));
 
             registerScanNode(node, scanNode, context);
             PlanFragment fragment =

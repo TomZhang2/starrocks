@@ -144,14 +144,22 @@ public class EsScanNode extends ScanNode {
             // If user has set timezone, we need to send it to BE
             properties.put(EsTable.KEY_TIME_ZONE, time_zone);
         }
+        // native query: pass SQL string via properties
+        if (table.isQueryTable()) {
+            properties.put(EsTable.KEY_NATIVE_QUERY, table.getPassThroughQuery());
+        }
         TEsScanNode esScanNode = new TEsScanNode(desc.getId().asInt());
         esScanNode.setProperties(properties);
-        if (table.isDocValueScanEnable()) {
-            esScanNode.setDocvalue_context(table.docValueContext());
-            properties.put(EsTable.KEY_DOC_VALUES_MODE, String.valueOf(useDocValueScan(desc, table.docValueContext())));
-        }
-        if (table.isKeywordSniffEnable() && table.fieldsContext().size() > 0) {
-            esScanNode.setFields_context(table.fieldsContext());
+        // native query skips docvalue/fields context (schema comes from SQL response, not index mapping)
+        if (!table.isQueryTable()) {
+            if (table.isDocValueScanEnable()) {
+                esScanNode.setDocvalue_context(table.docValueContext());
+                properties.put(EsTable.KEY_DOC_VALUES_MODE,
+                        String.valueOf(useDocValueScan(desc, table.docValueContext())));
+            }
+            if (table.isKeywordSniffEnable() && table.fieldsContext().size() > 0) {
+                esScanNode.setFields_context(table.fieldsContext());
+            }
         }
         msg.es_scan_node = esScanNode;
 
@@ -254,6 +262,81 @@ public class EsScanNode extends ScanNode {
             LOG.debug("ES table {}  scan ranges {}", table.getName(), scratchBuilder.toString());
         }
         return result;
+    }
+
+    /**
+     * Create a single scan range for native query (non-shard).
+     * ES SQL _sql endpoint is cluster-level, not per-shard.
+     * Uses the ES cluster's configured hosts directly.
+     */
+    public List<TScanRangeLocations> computeQueryTableScanRanges() throws StarRocksException {
+        // Parse ES seed addresses into TNetworkAddress
+        List<TNetworkAddress> esHosts = Lists.newArrayList();
+        for (String seed : table.getSeeds()) {
+            // seed format: "http://host:port" or "https://host:port"
+            String trimmed = seed.trim();
+            // Strip protocol
+            String hostPort;
+            if (trimmed.startsWith("https://")) {
+                hostPort = trimmed.substring("https://".length());
+            } else if (trimmed.startsWith("http://")) {
+                hostPort = trimmed.substring("http://".length());
+            } else {
+                hostPort = trimmed;
+            }
+            // Split host:port
+            int colonIdx = hostPort.lastIndexOf(':');
+            if (colonIdx > 0 && colonIdx < hostPort.length() - 1) {
+                String host = hostPort.substring(0, colonIdx);
+                int port;
+                try {
+                    port = Integer.parseInt(hostPort.substring(colonIdx + 1));
+                } catch (NumberFormatException e) {
+                    continue; // skip invalid entries
+                }
+                esHosts.add(new TNetworkAddress(host, port));
+            }
+        }
+        if (esHosts.isEmpty()) {
+            throw new StarRocksException("No valid ES hosts found for native query");
+        }
+
+        // Ensure compute nodes are assigned
+        if (nodeList == null || nodeList.isEmpty()) {
+            assignNodes();
+        }
+        if (nodeList.isEmpty()) {
+            throw new StarRocksException("No alive backends or compute nodes");
+        }
+
+        // Create single scan range
+        TScanRangeLocations locations = new TScanRangeLocations();
+
+        // Assign to 1-3 compute nodes (same pattern as computeShardLocations)
+        int numNode = Math.min(3, nodeList.size());
+        for (int i = 0; i < numNode; i++) {
+            TScanRangeLocation location = new TScanRangeLocation();
+            ComputeNode be = nodeList.get(i);
+            location.setBackend_id(be.getId());
+            location.setServer(new TNetworkAddress(be.getHost(), be.getBePort()));
+            locations.addToLocations(location);
+        }
+
+        // Create TEsScanRange with sentinel values
+        TEsScanRange esScanRange = new TEsScanRange();
+        esScanRange.setEs_hosts(esHosts);
+        esScanRange.setIndex("");        // empty — BE checks native_query property instead
+        esScanRange.setShard_id(-1);     // sentinel — non-shard scan
+
+        TScanRange scanRange = new TScanRange();
+        scanRange.setEs_scan_range(esScanRange);
+        locations.setScan_range(scanRange);
+
+        return Collections.singletonList(locations);
+    }
+
+    public EsTable getEsTable() {
+        return table;
     }
 
     @Override
