@@ -41,8 +41,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import okhttp3.Credentials;
+import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
+import okhttp3.RequestBody;
 import okhttp3.Response;
 import org.apache.http.HttpHeaders;
 import org.apache.logging.log4j.LogManager;
@@ -274,6 +276,110 @@ public class EsRestClient {
         return null;
     }
 
+    /**
+     * Execute a POST request to ES. Reuses the same SSL client selection as execute().
+     */
+    String executePost(String path, String jsonBody) throws StarRocksConnectorException {
+        int retrySize = nodes.length;
+        StarRocksConnectorException scratchExceptionForThrow = null;
+        OkHttpClient client;
+        if (sslEnabled) {
+            client = getOrCreateSSLClient();
+        } else {
+            client = NETWORK_CLIENT;
+        }
+        MediaType jsonMediaType = MediaType.parse("application/json; charset=utf-8");
+        for (int i = 0; i < retrySize; i++) {
+            currentNode = currentNode.trim();
+            if (!(currentNode.startsWith("http://") || currentNode.startsWith("https://"))) {
+                currentNode = "http://" + currentNode;
+            }
+            RequestBody body = RequestBody.create(jsonBody, jsonMediaType);
+            Request request = builder.post(body)
+                    .url(currentNode + "/" + path)
+                    .build();
+            Response response = null;
+            try {
+                response = client.newCall(request).execute();
+                if (response.isSuccessful()) {
+                    return response.body().string();
+                }
+            } catch (IOException e) {
+                LOG.warn("request node [{}] [{}] failures {}, try next nodes", currentNode, path, e);
+                scratchExceptionForThrow = new StarRocksConnectorException(e.getMessage());
+            } finally {
+                if (response != null) {
+                    response.close();
+                }
+            }
+            selectNextNode();
+        }
+        throw scratchExceptionForThrow != null
+                ? scratchExceptionForThrow
+                : new StarRocksConnectorException("All ES nodes failed for POST " + path);
+    }
+
+    /**
+     * Probe ES SQL schema by executing the query with fetch_size=1.
+     * Returns column metadata from the _sql response.
+     * The cursor is immediately closed after reading columns.
+     */
+    public List<EsSqlColumn> probeEsSqlSchema(String sqlQuery) throws StarRocksConnectorException {
+        try {
+            com.fasterxml.jackson.databind.node.ObjectNode requestBody = mapper.createObjectNode();
+            requestBody.put("query", sqlQuery);
+            requestBody.put("fetch_size", 1);
+
+            String response = executePost("_sql", requestBody.toString());
+
+            JsonNode json = mapper.readTree(response);
+
+            if (json.has("error")) {
+                throw new StarRocksConnectorException("ES SQL error: " +
+                        json.path("error").path("type").asText() + " - " +
+                        json.path("error").path("reason").asText());
+            }
+
+            List<EsSqlColumn> columns = new ArrayList<>();
+            if (json.has("columns")) {
+                for (JsonNode colNode : json.get("columns")) {
+                    columns.add(new EsSqlColumn(
+                            colNode.get("name").asText(),
+                            colNode.get("type").asText()
+                    ));
+                }
+            }
+
+            if (json.has("cursor")) {
+                String cursor = json.get("cursor").asText();
+                try {
+                    closeEsSqlCursor(cursor);
+                } catch (Exception e) {
+                    LOG.warn("Failed to close ES SQL cursor during schema probe", e);
+                }
+            }
+
+            return columns;
+        } catch (StarRocksConnectorException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new StarRocksConnectorException("Failed to probe ES SQL schema: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Close an ES SQL cursor to free server state.
+     */
+    private void closeEsSqlCursor(String cursor) throws StarRocksConnectorException {
+        try {
+            com.fasterxml.jackson.databind.node.ObjectNode body = mapper.createObjectNode();
+            body.put("cursor", cursor);
+            executePost("_sql/close", body.toString());
+        } catch (Exception e) {
+            LOG.warn("Failed to close ES SQL cursor", e);
+        }
+    }
+
     public <T> T get(String q, String key) throws StarRocksConnectorException {
         return parseContent(execute(q), key);
     }
@@ -417,5 +523,26 @@ public class EsRestClient {
                 .flatMap(e -> e.getValue().stream())
                 .forEach(indices::add);
         return new ArrayList<>(indices);
+    }
+
+    /**
+     * Column metadata from ES SQL _sql response.
+     */
+    public static class EsSqlColumn {
+        private final String name;
+        private final String type;
+
+        public EsSqlColumn(String name, String type) {
+            this.name = name;
+            this.type = type;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public String getType() {
+            return type;
+        }
     }
 }

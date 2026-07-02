@@ -20,11 +20,14 @@ import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.EsTable;
 import com.starrocks.catalog.PartitionKey;
+import com.starrocks.catalog.PassThroughQueryValidator;
 import com.starrocks.catalog.SinglePartitionInfo;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.Config;
+import com.starrocks.common.DdlException;
 import com.starrocks.common.tvr.TvrVersionRange;
 import com.starrocks.connector.ConnectorMetadata;
+import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.statistics.ConnectorNdvEstimator;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.optimizer.OptimizerContext;
@@ -32,10 +35,13 @@ import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.statistics.ColumnStatistic;
 import com.starrocks.sql.optimizer.statistics.Statistics;
+import com.starrocks.type.Type;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -93,6 +99,42 @@ public class ElasticsearchMetadata
             return null;
         }
         return toEsTable(esRestClient, properties, tblName, dbName, catalogName);
+    }
+
+    @Override
+    public Table getTableFromQuery(ConnectContext context, String dbName, String query) {
+        String normalizedQuery = PassThroughQueryValidator.normalize(query);
+
+        List<EsRestClient.EsSqlColumn> esColumns;
+        try {
+            esColumns = esRestClient.probeEsSqlSchema(normalizedQuery);
+        } catch (Exception e) {
+            throw new StarRocksConnectorException(
+                    "Failed to infer schema for ES native query: " + e.getMessage(), e);
+        }
+
+        if (esColumns.isEmpty()) {
+            throw new StarRocksConnectorException("ES native query returned no columns");
+        }
+
+        List<Column> fullSchema = new ArrayList<>();
+        for (EsRestClient.EsSqlColumn esCol : esColumns) {
+            Type srType = EsUtil.convertEsSqlType(esCol.getType());
+            fullSchema.add(new Column(esCol.getName(), srType, true));
+        }
+
+        Map<String, String> tableProps = new HashMap<>(properties);
+        tableProps.putIfAbsent(EsTable.KEY_INDEX, "_native_query_placeholder");
+
+        long tableId = CONNECTOR_ID_GENERATOR.getNextId().asLong();
+        try {
+            EsTable queryTable = new EsTable(tableId, catalogName, dbName,
+                    "_query_" + tableId, fullSchema, tableProps, new SinglePartitionInfo());
+            queryTable.setPassThroughQuery(normalizedQuery);
+            return queryTable;
+        } catch (DdlException e) {
+            throw new StarRocksConnectorException("Failed to create ES query table: " + e.getMessage(), e);
+        }
     }
 
     @Override

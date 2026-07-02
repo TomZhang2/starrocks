@@ -61,7 +61,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.zip.Adler32;
 
-public class EsTable extends Table implements GsonPostProcessable {
+public class EsTable extends Table implements GsonPostProcessable, PassThroughQueryTable {
     private static final Logger LOG = LogManager.getLogger(EsTable.class);
 
     public static final Set<String> DEFAULT_DOCVALUE_DISABLED_FIELDS = new HashSet<>(Arrays.asList("text"));
@@ -85,6 +85,7 @@ public class EsTable extends Table implements GsonPostProcessable {
     public static final String KEY_WAN_ONLY = "es.nodes.wan.only";
     public static final String KEY_ES_NET_SSL = "es.net.ssl";
     public static final String KEY_TIME_ZONE = "time_zone";
+    public static final String KEY_NATIVE_QUERY = "native_query";
 
     // tableContext is used for being convenient to persist some configuration parameters uniformly
     @SerializedName(value = "tc")
@@ -140,6 +141,11 @@ public class EsTable extends Table implements GsonPostProcessable {
     private String catalogName = null;
     private String dbName = null;
 
+    @SerializedName(value = "qt")
+    private boolean queryTable;
+
+    private String passThroughQuery;
+
     public EsTable() {
         super(TableType.ELASTICSEARCH);
     }
@@ -186,6 +192,22 @@ public class EsTable extends Table implements GsonPostProcessable {
 
     public boolean sslEnabled() {
         return sslEnabled;
+    }
+
+    @Override
+    public boolean isQueryTable() {
+        return queryTable;
+    }
+
+    @Override
+    public String getPassThroughQuery() {
+        return passThroughQuery;
+    }
+
+    @Override
+    public void setPassThroughQuery(String query) {
+        this.passThroughQuery = query;
+        this.queryTable = true;
     }
 
     private void validate(Map<String, String> properties) throws DdlException {

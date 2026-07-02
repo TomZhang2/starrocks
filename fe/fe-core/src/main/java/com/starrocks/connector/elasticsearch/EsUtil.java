@@ -52,6 +52,7 @@ import com.starrocks.type.JsonType;
 import com.starrocks.type.NullType;
 import com.starrocks.type.Type;
 import com.starrocks.type.TypeFactory;
+import com.starrocks.type.VarbinaryType;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -168,6 +169,58 @@ public class EsUtil {
             case "keyword":
             case "text":
             case "ip":
+            default:
+                return TypeFactory.createDefaultCatalogString();
+        }
+    }
+
+    /**
+     * Convert ES SQL type name (from _sql response columns) to StarRocks Type.
+     * ES SQL type names differ slightly from ES mapping type names:
+     * - "date" mapping type becomes "datetime" in ES SQL
+     * - ES SQL may return "time", "version", "binary" types
+     */
+    public static Type convertEsSqlType(String esSqlType) {
+        if (esSqlType == null) {
+            return NullType.NULL;
+        }
+        switch (esSqlType.toLowerCase()) {
+            case "null":
+                return NullType.NULL;
+            case "boolean":
+                return BooleanType.BOOLEAN;
+            case "byte":
+                return IntegerType.TINYINT;
+            case "short":
+                return IntegerType.SMALLINT;
+            case "integer":
+            case "int":
+                return IntegerType.INT;
+            case "long":
+                return IntegerType.BIGINT;
+            case "unsigned_long":
+                return IntegerType.LARGEINT;
+            case "float":
+            case "half_float":
+                return FloatType.FLOAT;
+            case "double":
+            case "scaled_float":
+                return FloatType.DOUBLE;
+            case "datetime":
+            case "date":
+                return DateType.DATETIME;
+            case "time":
+                return DateType.TIME;
+            case "keyword":
+            case "text":
+            case "ip":
+            case "version":
+                return TypeFactory.createDefaultCatalogString();
+            case "binary":
+                return VarbinaryType.VARBINARY;
+            case "nested":
+            case "object":
+                return JsonType.JSON;
             default:
                 return TypeFactory.createDefaultCatalogString();
         }
