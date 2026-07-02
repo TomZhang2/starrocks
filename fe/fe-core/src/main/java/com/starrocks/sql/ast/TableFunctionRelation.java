@@ -15,7 +15,7 @@
 package com.starrocks.sql.ast;
 
 import com.starrocks.catalog.FunctionName;
-import com.starrocks.catalog.JDBCTable;
+import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableFunction;
 import com.starrocks.catalog.TableName;
 import com.starrocks.sql.ast.expression.Expr;
@@ -41,7 +41,7 @@ public class TableFunctionRelation extends Relation {
     private final FunctionParams functionParams;
     private TableFunction tableFunction;
     private List<Expr> childExpressions;
-    private JDBCTable queryTable;
+    private Table queryTable;
 
     private boolean isLeftJoin = false;
 
@@ -88,11 +88,11 @@ public class TableFunctionRelation extends Relation {
         this.childExpressions = childExpressions;
     }
 
-    public JDBCTable getQueryTable() {
+    public Table getQueryTable() {
         return queryTable;
     }
 
-    public void setQueryTable(JDBCTable queryTable) {
+    public void setQueryTable(Table queryTable) {
         this.queryTable = queryTable;
     }
 

@@ -28,10 +28,11 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.HiveTable;
-import com.starrocks.catalog.JDBCTable;
 import com.starrocks.catalog.MaterializedIndexMeta;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
+import com.starrocks.catalog.PassThroughQueryTable;
+import com.starrocks.catalog.PassThroughQueryValidator;
 import com.starrocks.catalog.Resource;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableFunction;
@@ -137,8 +138,8 @@ import static com.starrocks.thrift.PlanNodesConstants.CACHE_STATS_TABLET_ID_COLU
 import static com.starrocks.thrift.PlanNodesConstants.CACHE_STATS_TOTAL_BYTES_COLUMN_NAME;
 
 public class QueryAnalyzer {
-    private static final String JDBC_QUERY_TABLE_FUNCTION_USAGE =
-            "JDBC query table function only supports TABLE(<catalog>.native_query('<sql>'))";
+    private static final String QUERY_TABLE_FUNCTION_USAGE =
+            "native query table function only supports TABLE(<catalog>.native_query('<sql>'))";
     private final ConnectContext session;
     private final MetadataMgr metadataMgr;
 
@@ -215,18 +216,18 @@ public class QueryAnalyzer {
                 return new JdbcQueryTableFunctionName(parts.get(0));
             }
 
-            throw new SemanticException(JDBC_QUERY_TABLE_FUNCTION_USAGE);
+            throw new SemanticException(QUERY_TABLE_FUNCTION_USAGE);
         }
 
         if (lastPart.equalsIgnoreCase("query") && parts.size() == 3
                 && parts.get(1).equalsIgnoreCase("system")) {
-            throw new SemanticException(JDBC_QUERY_TABLE_FUNCTION_USAGE);
+            throw new SemanticException(QUERY_TABLE_FUNCTION_USAGE);
         }
 
         return null;
     }
 
-    private JDBCTable resolveJdbcQueryTable(JdbcQueryTableFunctionName functionName, String passThroughQuery) {
+    private Table resolveQueryTable(JdbcQueryTableFunctionName functionName, String passThroughQuery) {
         Optional<ConnectorMetadata> metadata = metadataMgr.getOptionalMetadata(functionName.catalogName);
         if (metadata.isEmpty()) {
             throw new SemanticException("Unknown catalog '%s'", functionName.catalogName);
@@ -241,21 +242,21 @@ public class QueryAnalyzer {
         try {
             table = metadata.get().getTableFromQuery(session, currentDb, passThroughQuery);
         } catch (RuntimeException e) {
-            throw new SemanticException("Failed to resolve JDBC query table function: %s", e.getMessage());
+            throw new SemanticException("Failed to resolve query table function: %s", e.getMessage());
         }
 
-        if (!(table instanceof JDBCTable jdbcTable) || !jdbcTable.isQueryTable()) {
-            throw new SemanticException("Catalog '%s' does not support JDBC query table function",
+        if (!(table instanceof PassThroughQueryTable queryTable) || !queryTable.isQueryTable()) {
+            throw new SemanticException("Catalog '%s' does not support native query table function",
                     functionName.catalogName);
         }
-        return jdbcTable;
+        return table;
     }
 
-    private Scope buildJdbcQueryTableScope(TableFunctionRelation node, JDBCTable jdbcTable) {
-        node.setQueryTable(jdbcTable);
+    private Scope buildQueryTableScope(TableFunctionRelation node, Table queryTable) {
+        node.setQueryTable(queryTable);
         TableName relationName = node.getResolveTableName();
         ImmutableList.Builder<Field> fields = ImmutableList.builder();
-        for (Column column : jdbcTable.getFullSchema()) {
+        for (Column column : queryTable.getFullSchema()) {
             String columnName = column.getName();
             fields.add(new Field(columnName,
                     column.getType(),
@@ -1961,35 +1962,35 @@ public class QueryAnalyzer {
             }
 
             if (node.getColumnOutputNames() != null) {
-                throw new SemanticException("column aliases are not supported for JDBC query table function");
+                throw new SemanticException("column aliases are not supported for native query table function");
             }
 
             List<Expr> args = node.getFunctionParams().exprs();
             if (args.size() != 1) {
-                throw new SemanticException("JDBC query table function requires exactly one query argument");
+                throw new SemanticException("native query table function requires exactly one query argument");
             }
             if (argNames != null && !argNames.isEmpty()) {
-                throw new SemanticException(JDBC_QUERY_TABLE_FUNCTION_USAGE);
+                throw new SemanticException(QUERY_TABLE_FUNCTION_USAGE);
             }
 
             Expr queryExpr = args.get(0);
             if (!(queryExpr instanceof StringLiteral)) {
-                throw new SemanticException("JDBC query table function argument must be a string literal");
+                throw new SemanticException("native query table function argument must be a string literal");
             }
             String passThroughQuery;
             try {
-                passThroughQuery = JDBCTable.normalizePassThroughQuery(((StringLiteral) queryExpr).getStringValue());
+                passThroughQuery = PassThroughQueryValidator.normalize(((StringLiteral) queryExpr).getStringValue());
             } catch (IllegalArgumentException e) {
                 throw new SemanticException(e.getMessage());
             }
 
             node.setChildExpressions(args);
 
-            JDBCTable jdbcTable = node.getQueryTable();
-            if (jdbcTable == null) {
-                jdbcTable = resolveJdbcQueryTable(functionName, passThroughQuery);
+            Table queryTable = node.getQueryTable();
+            if (queryTable == null) {
+                queryTable = resolveQueryTable(functionName, passThroughQuery);
             }
-            return buildJdbcQueryTableScope(node, jdbcTable);
+            return buildQueryTableScope(node, queryTable);
         }
 
         private List<Expr> appendPositionalDefaultArgExprs(FunctionParams functionParams, Function fn) {
@@ -2197,7 +2198,7 @@ public class QueryAnalyzer {
 
             String passThroughQuery;
             try {
-                passThroughQuery = JDBCTable.normalizePassThroughQuery(((StringLiteral) queryExpr).getStringValue());
+                passThroughQuery = PassThroughQueryValidator.normalize(((StringLiteral) queryExpr).getStringValue());
             } catch (IllegalArgumentException e) {
                 return null;
             }
@@ -2207,11 +2208,15 @@ public class QueryAnalyzer {
                 return null;
             }
 
-            JDBCTable jdbcTable;
+            Table queryTable;
             try (Timer ignored = Tracers.watchScope("AnalyzeTable")) {
-                jdbcTable = resolveJdbcQueryTable(functionName, passThroughQuery);
+                queryTable = resolveQueryTable(functionName, passThroughQuery);
+            } catch (RuntimeException e) {
+                // Pre-resolution silently fails: ES unreachable, SQL syntax error, etc.
+                // The locked phase will re-resolve and produce the canonical error.
+                return null;
             }
-            node.setQueryTable(jdbcTable);
+            node.setQueryTable(queryTable);
             return null;
         }
 
