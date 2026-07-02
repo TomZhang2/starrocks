@@ -67,6 +67,8 @@ if (WITH_CONNECTOR_ELASTICSEARCH)
             elasticsearch/es_scan_reader.cpp
             elasticsearch/es_scroll_parser.cpp
             elasticsearch/es_scroll_query.cpp
+            elasticsearch/es_sql_reader.cpp
+            elasticsearch/es_sql_parser.cpp
     )
 
     target_link_libraries(ConnectorElasticsearch PUBLIC

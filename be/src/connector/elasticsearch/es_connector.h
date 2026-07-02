@@ -21,6 +21,7 @@ namespace starrocks {
 
 class EsPredicate;
 class ESScanReader;
+class ESSqlReader;
 class ScrollParser;
 
 namespace connector {
@@ -95,6 +96,7 @@ private:
     int64_t _cpu_time_ns = 0;
 
     ESScanReader* _es_reader = nullptr;
+    std::unique_ptr<ESSqlReader> _es_sql_reader;
     std::unique_ptr<ScrollParser> _es_scroll_parser;
 
     RuntimeProfile::Counter* _read_counter = nullptr;
