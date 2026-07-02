@@ -37,7 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-public class JDBCTable extends Table {
+public class JDBCTable extends Table implements PassThroughQueryTable {
 
     private static final String TABLE = "table";
     private static final String RESOURCE = "resource";
@@ -171,71 +171,24 @@ public class JDBCTable extends Table {
         this.commentFetched = commentFetched;
     }
 
+    @Override
     public boolean isQueryTable() {
         return queryTable;
     }
 
+    @Override
     public void setPassThroughQuery(String query) {
         jdbcTable = "(" + normalizePassThroughQuery(query) + ") starrocks_query";
         queryTable = true;
     }
 
+    @Override
+    public String getPassThroughQuery() {
+        return queryTable ? jdbcTable : null;
+    }
+
     public static String normalizePassThroughQuery(String query) {
-        String normalizedQuery = StringUtils.trimToEmpty(query);
-        while (normalizedQuery.endsWith(";")) {
-            normalizedQuery = StringUtils.stripEnd(normalizedQuery.substring(0, normalizedQuery.length() - 1), null);
-        }
-        if (normalizedQuery.isEmpty()) {
-            throw new IllegalArgumentException("pass-through query cannot be empty");
-        }
-        validatePassThroughQuery(normalizedQuery);
-        return normalizedQuery;
-    }
-
-    private static void validatePassThroughQuery(String query) {
-        String leadingSql = stripLeadingComments(query);
-        if (!startsWithSqlKeyword(leadingSql, "select")) {
-            throw new IllegalArgumentException("JDBC query table function only supports SELECT queries");
-        }
-    }
-
-    private static String stripLeadingComments(String query) {
-        int offset = 0;
-        while (offset < query.length()) {
-            char ch = query.charAt(offset);
-            if (Character.isWhitespace(ch)) {
-                offset++;
-                continue;
-            }
-            if (ch == '-' && offset + 1 < query.length() && query.charAt(offset + 1) == '-') {
-                offset += 2;
-                while (offset < query.length() && query.charAt(offset) != '\n' && query.charAt(offset) != '\r') {
-                    offset++;
-                }
-                continue;
-            }
-            if (ch == '/' && offset + 1 < query.length() && query.charAt(offset + 1) == '*') {
-                int commentEnd = query.indexOf("*/", offset + 2);
-                if (commentEnd < 0) {
-                    throw new IllegalArgumentException("JDBC query table function only supports SELECT queries");
-                }
-                offset = commentEnd + 2;
-                continue;
-            }
-            break;
-        }
-        return query.substring(offset);
-    }
-
-    private static boolean startsWithSqlKeyword(String query, String keyword) {
-        if (!query.regionMatches(true, 0, keyword, 0, keyword.length())) {
-            return false;
-        }
-        if (query.length() == keyword.length()) {
-            return true;
-        }
-        char next = query.charAt(keyword.length());
-        return !Character.isLetterOrDigit(next) && next != '_';
+        return PassThroughQueryValidator.normalize(query);
     }
 
     private void validate(Map<String, String> properties) throws DdlException {
