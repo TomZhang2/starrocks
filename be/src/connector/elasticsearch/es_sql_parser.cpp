@@ -16,9 +16,10 @@
 
 #include <string>
 
+#include "column/binary_column.h"
+#include "column/chunk.h"
 #include "column/column.h"
 #include "column/nullable_column.h"
-#include "column/vectorized_fwd.h"
 #include "common/compiler_util.h"
 #include "common/status.h"
 #include "types/logical_type.h"
@@ -45,14 +46,14 @@ Status EsSqlResponseParser::parse(const std::string& response, const std::vector
     }
 
     const auto& rows = doc["rows"].GetArray();
-    const auto& chunk_columns = chunk->columns();
+    size_t num_columns = chunk->num_columns();
 
     for (const auto& row : rows) {
         const auto& row_array = row.GetArray();
-        for (size_t col_idx = 0; col_idx < columns.size() && col_idx < chunk_columns.size(); col_idx++) {
+        for (size_t col_idx = 0; col_idx < columns.size() && col_idx < num_columns; col_idx++) {
             const auto& val = row_array[col_idx];
             const auto& es_type = columns[col_idx].type;
-            RETURN_IF_ERROR(append_value(es_type, val, chunk_columns[col_idx].get(), col_idx));
+            RETURN_IF_ERROR(append_value(es_type, val, chunk->get_column_raw_ptr_by_index(col_idx), col_idx));
         }
     }
 
