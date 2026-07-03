@@ -65,7 +65,7 @@ private:
     std::map<std::string, std::string> _properties;
     std::string _sql_query;
     int _batch_size;
-    RuntimeState* _state;
+    [[maybe_unused]] RuntimeState* _state;
 
     std::string _cursor;
     std::vector<EsSqlColumn> _columns;
