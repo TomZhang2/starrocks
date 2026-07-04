@@ -37,7 +37,10 @@ public:
     static Status parse(const std::string& response, const std::vector<EsSqlColumn>& columns, Chunk* chunk);
 
 private:
-    static Status append_value(const std::string& es_type, const rapidjson::Value& val, Column* col, size_t col_idx);
+    // Append a single JSON value to a StarRocks column.
+    // Dispatches on the column's LogicalType, not the ES SQL type string,
+    // to ensure down_cast always matches the actual runtime column type.
+    static Status append_value(const rapidjson::Value& val, Column* col);
     static std::string normalize_iso8601_datetime(const std::string& iso8601);
 };
 
