@@ -93,6 +93,12 @@ public class OptExternalPartitionPruner {
             LogicalEsScanOperator operator = (LogicalEsScanOperator) logicalScanOperator;
             EsTablePartitions esTablePartitions = operator.getEsTablePartitions();
 
+            // native_query ES tables are synthetic — they have no shard/partition metadata.
+            // Skip partition pruning entirely to avoid NPE on null esTablePartitions.
+            if (esTablePartitions == null) {
+                return logicalScanOperator;
+            }
+
             Collection<Long> partitionIds = null;
             try {
                 partitionIds = partitionPrune(operator.getTable(),

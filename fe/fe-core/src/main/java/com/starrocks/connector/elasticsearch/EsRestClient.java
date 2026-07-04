@@ -304,6 +304,16 @@ public class EsRestClient {
                 if (response.isSuccessful()) {
                     return response.body().string();
                 }
+                // For 4xx client errors (e.g. SQL syntax errors), read the body and throw
+                // immediately without retrying other nodes — the error is deterministic.
+                if (response.code() >= 400 && response.code() < 500) {
+                    String errorBody = response.body() != null ? response.body().string() : "";
+                    throw new StarRocksConnectorException(
+                            "ES request to " + currentNode + "/" + path + " failed: HTTP " + response.code()
+                                    + " — " + errorBody);
+                }
+            } catch (StarRocksConnectorException e) {
+                throw e;
             } catch (IOException e) {
                 LOG.warn("request node [{}] [{}] failures {}, try next nodes", currentNode, path, e);
                 scratchExceptionForThrow = new StarRocksConnectorException(e.getMessage());

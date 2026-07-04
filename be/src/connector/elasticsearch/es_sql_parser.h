@@ -21,26 +21,19 @@
 #include "common/status.h"
 #include "connector/elasticsearch/es_sql_reader.h"
 #include "rapidjson/document.h"
+#include "runtime/descriptors.h"
 
 namespace starrocks {
 
 class Chunk;
 
-// Parser for ES SQL _sql JSON response.
-// Converts the columnar rows format to StarRocks Chunk.
 class EsSqlResponseParser {
 public:
-    // Parse the _sql response JSON into a Chunk.
-    // columns: column metadata (name + type) from the first response
-    // response: the raw JSON response string
-    // chunk: output chunk to append rows to
-    static Status parse(const std::string& response, const std::vector<EsSqlColumn>& columns, Chunk* chunk);
+    static Status parse(const std::string& response, const std::vector<EsSqlColumn>& columns,
+                        const TupleDescriptor* tuple_desc, Chunk* chunk);
 
 private:
-    // Append a single JSON value to a StarRocks column.
-    // Dispatches on the column's LogicalType, not the ES SQL type string,
-    // to ensure down_cast always matches the actual runtime column type.
-    static Status append_value(const rapidjson::Value& val, Column* col);
+    static Status append_value(const rapidjson::Value& val, Column* col, LogicalType lt);
     static std::string normalize_iso8601_datetime(const std::string& iso8601);
 };
 

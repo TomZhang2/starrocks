@@ -121,15 +121,16 @@ Status ESSqlReader::open() {
 
 Status ESSqlReader::get_next(std::string* response, bool* eos) {
     *eos = false;
-    if (_eos) {
-        *eos = true;
-        return Status::OK();
-    }
 
     if (_has_cached_response) {
         *response = _cached_response;
         _cached_response.clear();
         _has_cached_response = false;
+        return Status::OK();
+    }
+
+    if (_eos) {
+        *eos = true;
         return Status::OK();
     }
 

@@ -1210,29 +1210,29 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
 
     private LogicalPlan buildQueryTablePlan(TableFunctionRelation node) {
         Table table = node.getQueryTable();
+        LogicalScanOperator scanOperator;
         if (table instanceof JDBCTable) {
-            return buildJdbcQueryTablePlan(node, (JDBCTable) table);
+            scanOperator = buildQueryTableScanOperator(node, (JDBCTable) table, LogicalJDBCScanOperator::new);
         } else if (table instanceof EsTable) {
-            return buildEsQueryTablePlan(node, (EsTable) table);
+            scanOperator = buildQueryTableScanOperator(node, (EsTable) table, LogicalEsScanOperator::new);
         } else {
             throw new StarRocksPlannerException(
                     "Unsupported query table type: " + table.getClass().getSimpleName(),
                     ErrorType.INTERNAL_ERROR);
         }
+        List<ColumnRefOperator> outputVariables = buildColumnRefs(node, table);
+        return new LogicalPlan(new OptExprBuilder(scanOperator, Collections.emptyList(),
+                new ExpressionMapping(new Scope(RelationId.of(node), node.getRelationFields()), outputVariables)),
+                outputVariables, List.of());
     }
 
-    private LogicalPlan buildJdbcQueryTablePlan(TableFunctionRelation node, JDBCTable table) {
+    private List<ColumnRefOperator> buildColumnRefs(TableFunctionRelation node, Table table) {
         List<Field> relationFields = node.getRelationFields().getAllFields();
         List<Column> fullSchema = table.getFullSchema();
         Preconditions.checkState(relationFields.size() == fullSchema.size());
 
-        ImmutableMap.Builder<ColumnRefOperator, Column> colRefToColumnMetaMapBuilder =
-                ImmutableMap.builderWithExpectedSize(fullSchema.size());
-        ImmutableMap.Builder<Column, ColumnRefOperator> columnMetaToColRefMapBuilder =
-                ImmutableMap.builderWithExpectedSize(fullSchema.size());
         ImmutableList.Builder<ColumnRefOperator> outputVariablesBuilder =
                 ImmutableList.builderWithExpectedSize(fullSchema.size());
-
         int relationId = columnRefFactory.getNextRelationId();
         for (int i = 0; i < fullSchema.size(); i++) {
             Column column = fullSchema.get(i);
@@ -1241,23 +1241,19 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
             columnRefFactory.updateColumnToRelationIds(columnRef.getId(), relationId);
             columnRefFactory.updateColumnRefToColumns(columnRef, column, table);
             outputVariablesBuilder.add(columnRef);
-            colRefToColumnMetaMapBuilder.put(columnRef, column);
-            columnMetaToColRefMapBuilder.put(column, columnRef);
         }
-
-        List<ColumnRefOperator> outputVariables = outputVariablesBuilder.build();
-        LogicalScanOperator scanOperator = new LogicalJDBCScanOperator(table,
-                colRefToColumnMetaMapBuilder.build(),
-                columnMetaToColRefMapBuilder.build(),
-                Operator.DEFAULT_LIMIT,
-                null,
-                null);
-        return new LogicalPlan(new OptExprBuilder(scanOperator, Collections.emptyList(),
-                new ExpressionMapping(new Scope(RelationId.of(node), node.getRelationFields()), outputVariables)),
-                outputVariables, List.of());
+        return outputVariablesBuilder.build();
     }
 
-    private LogicalPlan buildEsQueryTablePlan(TableFunctionRelation node, EsTable table) {
+    @FunctionalInterface
+    private interface ScanOperatorFactory<T extends Table> {
+        LogicalScanOperator create(T table, Map<ColumnRefOperator, Column> colRefToColumnMetaMap,
+                                   Map<Column, ColumnRefOperator> columnMetaToColRefMap,
+                                   long limit, ScalarOperator predicate, Projection projection);
+    }
+
+    private <T extends Table> LogicalScanOperator buildQueryTableScanOperator(
+            TableFunctionRelation node, T table, ScanOperatorFactory<T> factory) {
         List<Field> relationFields = node.getRelationFields().getAllFields();
         List<Column> fullSchema = table.getFullSchema();
         Preconditions.checkState(relationFields.size() == fullSchema.size());
@@ -1266,9 +1262,6 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
                 ImmutableMap.builderWithExpectedSize(fullSchema.size());
         ImmutableMap.Builder<Column, ColumnRefOperator> columnMetaToColRefMapBuilder =
                 ImmutableMap.builderWithExpectedSize(fullSchema.size());
-        ImmutableList.Builder<ColumnRefOperator> outputVariablesBuilder =
-                ImmutableList.builderWithExpectedSize(fullSchema.size());
-
         int relationId = columnRefFactory.getNextRelationId();
         for (int i = 0; i < fullSchema.size(); i++) {
             Column column = fullSchema.get(i);
@@ -1276,21 +1269,11 @@ public class RelationTransformer implements AstVisitorExtendInterface<LogicalPla
             ColumnRefOperator columnRef = columnRefFactory.create(field.getName(), field.getType(), column.isAllowNull());
             columnRefFactory.updateColumnToRelationIds(columnRef.getId(), relationId);
             columnRefFactory.updateColumnRefToColumns(columnRef, column, table);
-            outputVariablesBuilder.add(columnRef);
             colRefToColumnMetaMapBuilder.put(columnRef, column);
             columnMetaToColRefMapBuilder.put(column, columnRef);
         }
-
-        List<ColumnRefOperator> outputVariables = outputVariablesBuilder.build();
-        LogicalScanOperator scanOperator = new LogicalEsScanOperator(table,
-                colRefToColumnMetaMapBuilder.build(),
-                columnMetaToColRefMapBuilder.build(),
-                Operator.DEFAULT_LIMIT,
-                null,
-                null);
-        return new LogicalPlan(new OptExprBuilder(scanOperator, Collections.emptyList(),
-                new ExpressionMapping(new Scope(RelationId.of(node), node.getRelationFields()), outputVariables)),
-                outputVariables, List.of());
+        return factory.create(table, colRefToColumnMetaMapBuilder.build(),
+                columnMetaToColRefMapBuilder.build(), Operator.DEFAULT_LIMIT, null, null);
     }
 
     @Override

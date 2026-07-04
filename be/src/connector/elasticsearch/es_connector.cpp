@@ -269,7 +269,7 @@ Status ESDataSource::get_next(RuntimeState* state, ChunkPtr* chunk) {
             return Status::EndOfFile("");
         }
         const auto& columns = _es_sql_reader->columns();
-        RETURN_IF_ERROR(EsSqlResponseParser::parse(response, columns, chunk->get()));
+        RETURN_IF_ERROR(EsSqlResponseParser::parse(response, columns, _tuple_desc, chunk->get()));
         return Status::OK();
     }
 
