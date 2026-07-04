@@ -25,6 +25,8 @@
 #include "types/logical_type.h"
 #include "types/timestamp_value.h"
 #include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 
 namespace starrocks {
 
