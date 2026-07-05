@@ -16,6 +16,11 @@
 
 #include <string>
 
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
+
+#include "base/string/string_parser.hpp"
 #include "column/binary_column.h"
 #include "column/chunk.h"
 #include "column/column.h"
@@ -24,9 +29,6 @@
 #include "common/status.h"
 #include "types/logical_type.h"
 #include "types/timestamp_value.h"
-#include "rapidjson/document.h"
-#include "rapidjson/stringbuffer.h"
-#include "rapidjson/writer.h"
 
 namespace starrocks {
 
@@ -52,14 +54,23 @@ Status EsSqlResponseParser::parse(const std::string& response, const std::vector
 
     for (const auto& row : rows) {
         const auto& row_array = row.GetArray();
+        const size_t row_size = row_array.Size();
         for (size_t col_idx = 0; col_idx < columns.size() && col_idx < num_columns; col_idx++) {
-            const auto& val = row_array[col_idx];
             Column* col = chunk->get_column_raw_ptr_by_index(col_idx);
             LogicalType lt = TYPE_UNKNOWN;
             if (col_idx < slots.size()) {
                 lt = slots[col_idx]->type().type;
             }
-            RETURN_IF_ERROR(append_value(val, col, lt));
+            if (col_idx < row_size) {
+                const auto& val = row_array[col_idx];
+                RETURN_IF_ERROR(append_value(val, col, lt));
+            } else {
+                // Row has fewer values than the column count (e.g. ES-side
+                // schema drift between probe and execution). Keep the chunk
+                // aligned by appending a null for the missing column instead
+                // of reading out of bounds.
+                col->append_default();
+            }
         }
     }
 
@@ -101,7 +112,28 @@ Status EsSqlResponseParser::append_value(const rapidjson::Value& val, Column* co
         break;
     }
     case TYPE_LARGEINT: {
-        down_cast<Int128Column*>(data_col)->append(static_cast<int128_t>(val.GetUint64()));
+        int128_t value = 0;
+        if (val.IsString()) {
+            // ES SQL returns unsigned_long as a JSON string (not a number) to
+            // preserve precision for values exceeding 2^53. Parse the decimal
+            // string into int128; GetUint64() would assert/UB on kStringType.
+            StringParser::ParseResult result;
+            value = StringParser::string_to_int<int128_t>(val.GetString(), val.GetStringLength(), &result);
+            if (UNLIKELY(result != StringParser::PARSE_SUCCESS)) {
+                data_col->append_default();
+                break;
+            }
+        } else if (val.IsUint64()) {
+            value = static_cast<int128_t>(val.GetUint64());
+        } else if (val.IsInt64()) {
+            value = static_cast<int128_t>(val.GetInt64());
+        } else if (val.IsDouble()) {
+            value = static_cast<int128_t>(val.GetDouble());
+        } else {
+            data_col->append_default();
+            break;
+        }
+        down_cast<Int128Column*>(data_col)->append(value);
         break;
     }
     case TYPE_FLOAT: {
@@ -115,13 +147,13 @@ Status EsSqlResponseParser::append_value(const rapidjson::Value& val, Column* co
     case TYPE_DATETIME: {
         std::string str = val.GetString();
         std::string normalized = normalize_iso8601_datetime(str);
-        int year = 0, month = 0, day = 0, hour = 0, min = 0, sec = 0, usec = 0;
-        if (sscanf(normalized.c_str(), "%d-%d-%d %d:%d:%d.%d", &year, &month, &day, &hour, &min, &sec, &usec) >= 6) {
+        int year = 0, month = 0, day = 0, hour = 0, min = 0, sec = 0;
+        if (sscanf(normalized.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) >= 6) {
+            // ES SQL DATETIME has millisecond precision; convert the fractional
+            // seconds to microseconds (e.g. ".123" -> 123000us, not 123us).
+            int usec = fraction_to_microseconds(normalized);
             down_cast<TimestampColumn*>(data_col)->append(
                     TimestampValue::create(year, month, day, hour, min, sec, usec));
-        } else if (sscanf(normalized.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) >= 6) {
-            down_cast<TimestampColumn*>(data_col)->append(
-                    TimestampValue::create(year, month, day, hour, min, sec, 0));
         } else if (sscanf(normalized.c_str(), "%d-%d-%d", &year, &month, &day) >= 3) {
             down_cast<TimestampColumn*>(data_col)->append(
                     TimestampValue::create(year, month, day, 0, 0, 0, 0));
@@ -200,6 +232,30 @@ std::string EsSqlResponseParser::normalize_iso8601_datetime(const std::string& i
     }
     result.erase(result.find_last_not_of(" \t") + 1);
     return result;
+}
+
+int EsSqlResponseParser::fraction_to_microseconds(const std::string& datetime) {
+    // Convert the fractional-seconds portion (digits following the first '.') of
+    // a normalized datetime string into microseconds. ES SQL DATETIME uses
+    // millisecond precision, so ".123" must yield 123000us rather than 123us,
+    // and ".1" must yield 100000us rather than 1us.
+    size_t dot = datetime.find('.');
+    if (dot == std::string::npos) {
+        return 0;
+    }
+    size_t i = dot + 1;
+    int usec = 0;
+    int digits = 0;
+    while (i < datetime.size() && datetime[i] >= '0' && datetime[i] <= '9' && digits < 6) {
+        usec = usec * 10 + (datetime[i] - '0');
+        ++i;
+        ++digits;
+    }
+    // Scale up to a full 6-digit microsecond value, padding missing digits.
+    for (int j = digits; j < 6; ++j) {
+        usec *= 10;
+    }
+    return usec;
 }
 
 } // namespace starrocks

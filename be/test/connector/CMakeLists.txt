@@ -101,6 +101,7 @@ if (WITH_CONNECTOR_ELASTICSEARCH)
             elasticsearch/es_query_builder_test.cpp
             elasticsearch/es_scan_reader_test.cpp
             elasticsearch/es_scroll_parser_test.cpp
+            elasticsearch/es_sql_parser_test.cpp
     )
     target_link_libraries(connector_elasticsearch_test ${CONNECTOR_ELASTICSEARCH_TEST_LINK_LIBS} gtest_main)
     set_target_properties(connector_elasticsearch_test PROPERTIES COMPILE_FLAGS "-fno-access-control")

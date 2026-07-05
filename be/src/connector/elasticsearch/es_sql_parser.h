@@ -35,6 +35,7 @@ public:
 private:
     static Status append_value(const rapidjson::Value& val, Column* col, LogicalType lt);
     static std::string normalize_iso8601_datetime(const std::string& iso8601);
+    static int fraction_to_microseconds(const std::string& datetime);
 };
 
 } // namespace starrocks
