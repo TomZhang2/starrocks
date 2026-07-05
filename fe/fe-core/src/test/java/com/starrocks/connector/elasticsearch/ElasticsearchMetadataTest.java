@@ -104,4 +104,28 @@ public class ElasticsearchMetadataTest {
         Assertions.assertEquals((double) Config.default_statistics_output_row_count,
                 stats.getOutputRowCount(), 0.01);
     }
+
+    @Test
+    public void testGetTableStatisticsNativeQuerySkipsRowCount(@Mocked EsRestClient client, @Mocked EsTable esTable) {
+        new Expectations() {
+            {
+                esTable.isQueryTable();
+                result = true;
+            }
+        };
+
+        ElasticsearchMetadata metadata = new ElasticsearchMetadata(client, new HashMap<>(), "catalog");
+        Statistics stats = metadata.getTableStatistics(
+                null, esTable, Collections.emptyMap(), Collections.emptyList(), null, -1, TvrTableSnapshot.empty());
+
+        // native_query tables must not call getRowCount (placeholder index would waste an HTTP call)
+        new Verifications() {
+            {
+                client.getRowCount(anyString);
+                times = 0;
+            }
+        };
+        Assertions.assertEquals((double) Config.default_statistics_output_row_count,
+                stats.getOutputRowCount(), 0.01);
+    }
 }

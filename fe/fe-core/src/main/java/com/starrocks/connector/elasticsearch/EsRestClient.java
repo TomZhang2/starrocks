@@ -65,6 +65,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLContext;
@@ -92,10 +93,9 @@ public class EsRestClient {
 
     private static OkHttpClient sslNetworkClient;
 
-    private final Request.Builder builder;
     private final String[] nodes;
-    private String currentNode;
-    private int currentNodeIndex = 0;
+    private final String authHeader;
+    private final AtomicInteger currentNodeIndex = new AtomicInteger(0);
 
     private boolean sslEnabled;
 
@@ -106,21 +106,35 @@ public class EsRestClient {
 
     public EsRestClient(String[] nodes, String authUser, String authPassword) {
         this.nodes = nodes;
-        this.builder = new Request.Builder();
-        if (!Strings.isEmpty(authUser) && !Strings.isEmpty(authPassword)) {
-            this.builder.addHeader(HttpHeaders.AUTHORIZATION,
-                    Credentials.basic(authUser, authPassword));
-        }
-        this.currentNode = nodes[currentNodeIndex];
+        this.authHeader = (!Strings.isEmpty(authUser) && !Strings.isEmpty(authPassword))
+                ? Credentials.basic(authUser, authPassword) : null;
     }
 
-    private void selectNextNode() {
-        currentNodeIndex++;
-        // reroute, because the previously failed node may have already been restored
-        if (currentNodeIndex >= nodes.length) {
-            currentNodeIndex = 0;
+    /**
+     * Build a fresh Request.Builder with the auth header (if any) pre-set.
+     * Each call gets its own builder so concurrent requests never share
+     * mutable Request.Builder state.
+     */
+    private Request.Builder newRequestBuilder() {
+        Request.Builder b = new Request.Builder();
+        if (authHeader != null) {
+            b.addHeader(HttpHeaders.AUTHORIZATION, authHeader);
         }
-        currentNode = nodes[currentNodeIndex];
+        return b;
+    }
+
+    /**
+     * Resolve the node at the given round-robin offset into a normalized URL
+     * (with protocol prepended if missing). Uses a local computation so
+     * concurrent calls never clobber shared node state.
+     */
+    private String nodeUrl(int offset) {
+        int idx = offset % nodes.length;
+        String node = nodes[idx].trim();
+        if (!node.startsWith("http://") && !node.startsWith("https://")) {
+            node = "http://" + node;
+        }
+        return node;
     }
 
     public Map<String, EsNodeInfo> getHttpNodes() throws StarRocksConnectorException {
@@ -228,6 +242,7 @@ public class EsRestClient {
      */
     String execute(String path) throws StarRocksConnectorException {
         int retrySize = nodes.length;
+        int startIndex = currentNodeIndex.getAndIncrement();
         StarRocksConnectorException scratchExceptionForThrow = null;
         OkHttpClient client;
         if (sslEnabled) {
@@ -236,18 +251,8 @@ public class EsRestClient {
             client = NETWORK_CLIENT;
         }
         for (int i = 0; i < retrySize; i++) {
-            // maybe should add HTTP schema to the address
-            // actually, at this time we can only process http protocol
-            // NOTE. currentNode may have some spaces.
-            // User may set a config like described below:
-            // hosts: "http://192.168.0.1:8200, http://192.168.0.2:8200"
-            // then currentNode will be "http://192.168.0.1:8200", " http://192.168.0.2:8200"
-            // If use ipv6, remember to use format like [2001:0db8:85a3:0000:0000:8a2e:0370:7334]:8080
-            currentNode = currentNode.trim();
-            if (!(currentNode.startsWith("http://") || currentNode.startsWith("https://"))) {
-                currentNode = "http://" + currentNode;
-            }
-            Request request = builder.get()
+            String currentNode = nodeUrl(startIndex + i);
+            Request request = newRequestBuilder().get()
                     .url(currentNode + "/" + path)
                     .build();
             Response response = null;
@@ -267,7 +272,6 @@ public class EsRestClient {
                     response.close();
                 }
             }
-            selectNextNode();
         }
         LOG.warn("try all nodes [{}],no other nodes left", (Object) nodes);
         if (scratchExceptionForThrow != null) {
@@ -281,6 +285,7 @@ public class EsRestClient {
      */
     String executePost(String path, String jsonBody) throws StarRocksConnectorException {
         int retrySize = nodes.length;
+        int startIndex = currentNodeIndex.getAndIncrement();
         StarRocksConnectorException scratchExceptionForThrow = null;
         OkHttpClient client;
         if (sslEnabled) {
@@ -290,12 +295,9 @@ public class EsRestClient {
         }
         MediaType jsonMediaType = MediaType.parse("application/json; charset=utf-8");
         for (int i = 0; i < retrySize; i++) {
-            currentNode = currentNode.trim();
-            if (!(currentNode.startsWith("http://") || currentNode.startsWith("https://"))) {
-                currentNode = "http://" + currentNode;
-            }
+            String currentNode = nodeUrl(startIndex + i);
             RequestBody body = RequestBody.create(jsonBody, jsonMediaType);
-            Request request = builder.post(body)
+            Request request = newRequestBuilder().post(body)
                     .url(currentNode + "/" + path)
                     .build();
             Response response = null;
@@ -322,7 +324,6 @@ public class EsRestClient {
                     response.close();
                 }
             }
-            selectNextNode();
         }
         throw scratchExceptionForThrow != null
                 ? scratchExceptionForThrow

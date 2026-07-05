@@ -148,10 +148,17 @@ public class ElasticsearchMetadata
         Statistics.Builder builder = Statistics.builder()
                 .setStatsSource(Statistics.StatsSource.TABLE_METADATA);
         EsTable esTable = (EsTable) table;
-        long rowCount = rowCountCache.get(esTable.getIndexName(), key -> {
-            long cnt = esRestClient.getRowCount(key);
-            return cnt >= 0 ? cnt : Config.default_statistics_output_row_count;
-        });
+        // native_query tables use a placeholder index name; skip the ES _cat/indices
+        // call (which would always return empty) and use the default row count.
+        long rowCount;
+        if (esTable.isQueryTable()) {
+            rowCount = Config.default_statistics_output_row_count;
+        } else {
+            rowCount = rowCountCache.get(esTable.getIndexName(), key -> {
+                long cnt = esRestClient.getRowCount(key);
+                return cnt >= 0 ? cnt : Config.default_statistics_output_row_count;
+            });
+        }
         builder.setOutputRowCount(rowCount);
         for (Map.Entry<ColumnRefOperator, Column> entry : columns.entrySet()) {
             ConnectorNdvEstimator.TypeCategory cat =
