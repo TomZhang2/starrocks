@@ -18,6 +18,8 @@ add_library(Connector STATIC
         connector.cpp
         hive_connector.cpp
         es_connector.cpp
+        es_sql_reader.cpp
+        es_sql_parser.cpp
         jdbc_connector.cpp
         lake_connector.cpp
         mysql_connector.cpp

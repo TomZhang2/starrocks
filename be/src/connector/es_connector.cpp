@@ -15,6 +15,8 @@
 #include "connector/es_connector.h"
 
 #include "common/logging.h"
+#include "connector/es_sql_parser.h"
+#include "connector/es_sql_reader.h"
 #include "exec/es/es_predicate.h"
 #include "exec/es/es_query_builder.h"
 #include "exec/es/es_scan_reader.h"
@@ -192,6 +194,18 @@ static std::string get_host_port(const std::vector<TNetworkAddress>& es_hosts) {
 }
 
 Status ESDataSource::_create_scanner() {
+    // === native_query branch: MUST be before ESScrollQueryBuilder::build ===
+    auto it_native = _properties.find("native_query");
+    if (it_native != _properties.end()) {
+        // native query mode: use ESSqlReader
+        const TEsScanRange& es_scan_range = _scan_range;
+        int sql_fetch_size = std::min(config::es_index_max_result_window, _runtime_state->chunk_size());
+        _es_sql_reader = std::make_unique<ESSqlReader>(es_scan_range.es_hosts, _properties, it_native->second,
+                                                       sql_fetch_size, _runtime_state);
+        return _es_sql_reader->open();
+    }
+
+    // === Original scroll path ===
     // create scanner.
     const TEsScanRange& es_scan_range = _scan_range;
     _properties[ESScanReader::KEY_INDEX] = es_scan_range.index;
@@ -222,6 +236,10 @@ void ESDataSource::close(RuntimeState* state) {
     if (_es_reader != nullptr) {
         WARN_IF_ERROR(_es_reader->close(), "close es reader failed");
     }
+    if (_es_sql_reader != nullptr) {
+        WARN_IF_ERROR(_es_sql_reader->close(), "close es sql reader failed");
+        _es_sql_reader.reset();
+    }
 }
 
 void ESDataSource::_init_counter() {
@@ -238,6 +256,20 @@ Status ESDataSource::get_next(RuntimeState* state, ChunkPtr* chunk) {
         return Status::EndOfFile("");
     }
 
+    // === native_query path ===
+    if (_es_sql_reader != nullptr) {
+        std::string response;
+        bool eos = false;
+        RETURN_IF_ERROR(_es_sql_reader->get_next(&response, &eos));
+        if (eos) {
+            return Status::EndOfFile("");
+        }
+        const auto& columns = _es_sql_reader->columns();
+        RETURN_IF_ERROR(EsSqlResponseParser::parse(response, columns, _tuple_desc, chunk->get()));
+        return Status::OK();
+    }
+
+    // === Original scroll path ===
     SCOPED_TIMER(_read_timer);
     while (!_batch_eof) {
         RETURN_IF_CANCELLED(state);
