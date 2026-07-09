@@ -168,6 +168,57 @@ public class EsUtil {
     }
 
     /**
+     * Convert ES SQL type name (from _sql response columns) to StarRocks Type.
+     * ES SQL type names differ slightly from ES mapping type names:
+     * - "date" mapping type becomes "datetime" in ES SQL
+     * - ES SQL may return "time", "version", "binary" types
+     */
+    public static Type convertEsSqlType(String esSqlType) {
+        if (esSqlType == null) {
+            return Type.NULL;
+        }
+        switch (esSqlType.toLowerCase()) {
+            case "null":
+                return Type.NULL;
+            case "boolean":
+                return Type.BOOLEAN;
+            case "byte":
+                return Type.TINYINT;
+            case "short":
+                return Type.SMALLINT;
+            case "integer":
+            case "int":
+                return Type.INT;
+            case "long":
+                return Type.BIGINT;
+            case "unsigned_long":
+                return Type.LARGEINT;
+            case "float":
+            case "half_float":
+                return Type.FLOAT;
+            case "double":
+            case "scaled_float":
+                return Type.DOUBLE;
+            case "datetime":
+            case "date":
+                return Type.DATETIME;
+            case "time":
+                return Type.DOUBLE;
+            case "keyword":
+            case "text":
+            case "ip":
+            case "version":
+            case "binary":
+                return ScalarType.createDefaultCatalogString();
+            case "nested":
+            case "object":
+                return Type.JSON;
+            default:
+                return ScalarType.createDefaultCatalogString();
+        }
+    }
+
+    /**
      * {
      * "media_account": {
      * "mappings": {

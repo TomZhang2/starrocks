@@ -34,6 +34,7 @@ import com.starrocks.catalog.DistributionInfo.DistributionInfoType;
 import com.starrocks.catalog.EsTable;
 import com.starrocks.catalog.HashDistributionInfo;
 import com.starrocks.catalog.IcebergTable;
+import com.starrocks.catalog.JDBCTable;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableFunction;
@@ -1043,6 +1044,10 @@ public class RelationTransformer implements AstVisitor<LogicalPlan, ExpressionMa
 
     @Override
     public LogicalPlan visitTableFunction(TableFunctionRelation node, ExpressionMapping context) {
+        if (node.getQueryTable() != null) {
+            return buildQueryTablePlan(node);
+        }
+
         List<ColumnRefOperator> outputColumns = new ArrayList<>();
         TableFunction tableFunction = node.getTableFunction();
 
@@ -1082,8 +1087,81 @@ public class RelationTransformer implements AstVisitor<LogicalPlan, ExpressionMa
                 null, List.of());
     }
 
+    private LogicalPlan buildQueryTablePlan(TableFunctionRelation node) {
+        Table table = node.getQueryTable();
+        LogicalScanOperator scanOperator;
+        if (table instanceof JDBCTable) {
+            scanOperator = buildQueryTableScanOperator(node, (JDBCTable) table, LogicalJDBCScanOperator::new);
+        } else if (table instanceof EsTable) {
+            scanOperator = buildQueryTableScanOperator(node, (EsTable) table, LogicalEsScanOperator::new);
+        } else {
+            throw new StarRocksPlannerException(
+                    "Unsupported query table type: " + table.getClass().getSimpleName(),
+                    ErrorType.INTERNAL_ERROR);
+        }
+        List<ColumnRefOperator> outputVariables = buildColumnRefs(node, table);
+        return new LogicalPlan(new OptExprBuilder(scanOperator, Collections.emptyList(),
+                new ExpressionMapping(new Scope(RelationId.of(node), node.getRelationFields()), outputVariables)),
+                outputVariables, List.of());
+    }
+
+    private List<ColumnRefOperator> buildColumnRefs(TableFunctionRelation node, Table table) {
+        List<Field> relationFields = node.getRelationFields().getAllFields();
+        List<Column> fullSchema = table.getFullSchema();
+        Preconditions.checkState(relationFields.size() == fullSchema.size());
+
+        ImmutableList.Builder<ColumnRefOperator> outputVariablesBuilder =
+                ImmutableList.builderWithExpectedSize(fullSchema.size());
+        int relationId = columnRefFactory.getNextRelationId();
+        for (int i = 0; i < fullSchema.size(); i++) {
+            Column column = fullSchema.get(i);
+            Field field = relationFields.get(i);
+            ColumnRefOperator columnRef = columnRefFactory.create(field.getName(), field.getType(), column.isAllowNull());
+            columnRefFactory.updateColumnToRelationIds(columnRef.getId(), relationId);
+            columnRefFactory.updateColumnRefToColumns(columnRef, column, table);
+            outputVariablesBuilder.add(columnRef);
+        }
+        return outputVariablesBuilder.build();
+    }
+
+    @FunctionalInterface
+    private interface ScanOperatorFactory<T extends Table> {
+        LogicalScanOperator create(T table, Map<ColumnRefOperator, Column> colRefToColumnMetaMap,
+                                   Map<Column, ColumnRefOperator> columnMetaToColRefMap,
+                                   long limit, ScalarOperator predicate, Projection projection);
+    }
+
+    private <T extends Table> LogicalScanOperator buildQueryTableScanOperator(
+            TableFunctionRelation node, T table, ScanOperatorFactory<T> factory) {
+        List<Field> relationFields = node.getRelationFields().getAllFields();
+        List<Column> fullSchema = table.getFullSchema();
+        Preconditions.checkState(relationFields.size() == fullSchema.size());
+
+        ImmutableMap.Builder<ColumnRefOperator, Column> colRefToColumnMetaMapBuilder =
+                ImmutableMap.builderWithExpectedSize(fullSchema.size());
+        ImmutableMap.Builder<Column, ColumnRefOperator> columnMetaToColRefMapBuilder =
+                ImmutableMap.builderWithExpectedSize(fullSchema.size());
+        int relationId = columnRefFactory.getNextRelationId();
+        for (int i = 0; i < fullSchema.size(); i++) {
+            Column column = fullSchema.get(i);
+            Field field = relationFields.get(i);
+            ColumnRefOperator columnRef = columnRefFactory.create(field.getName(), field.getType(), column.isAllowNull());
+            columnRefFactory.updateColumnToRelationIds(columnRef.getId(), relationId);
+            columnRefFactory.updateColumnRefToColumns(columnRef, column, table);
+            colRefToColumnMetaMapBuilder.put(columnRef, column);
+            columnMetaToColRefMapBuilder.put(column, columnRef);
+        }
+        return factory.create(table, colRefToColumnMetaMapBuilder.build(),
+                columnMetaToColRefMapBuilder.build(), Operator.DEFAULT_LIMIT, null, null);
+    }
+
     @Override
     public LogicalPlan visitNormalizedTableFunction(NormalizedTableFunctionRelation node, ExpressionMapping context) {
+        if (node.getRight() instanceof TableFunctionRelation
+                && ((TableFunctionRelation) node.getRight()).getQueryTable() != null) {
+            return visit(node.getRight(), context);
+        }
+
         LogicalPlan plan = visitJoin(node, context);
         // Column prune, only the table function columns should be returned.
         OptExprBuilder rootBuilder = plan.getRootBuilder();

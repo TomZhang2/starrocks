@@ -18,6 +18,7 @@ import com.starrocks.connector.config.Config;
 import com.starrocks.connector.config.ConnectorConfig;
 
 import static com.starrocks.catalog.EsTable.KEY_DOC_VALUE_SCAN;
+import static com.starrocks.catalog.EsTable.KEY_ES_DISTRIBUTION;
 import static com.starrocks.catalog.EsTable.KEY_ES_NET_SSL;
 import static com.starrocks.catalog.EsTable.KEY_HOSTS;
 import static com.starrocks.catalog.EsTable.KEY_KEYWORD_SNIFF;
@@ -56,6 +57,11 @@ public class EsConfig extends ConnectorConfig {
             desc = "Whether to enable sniffing keyword for filtering more reasonable",
             defaultValue = "true")
     private boolean enableKeywordSniff;
+
+    @Config(key = KEY_ES_DISTRIBUTION,
+            desc = "search engine distribution: elasticsearch or opensearch",
+            defaultValue = "elasticsearch")
+    private String distribution;
 
     public String[] getNodes() {
         return nodes;
@@ -111,5 +117,13 @@ public class EsConfig extends ConnectorConfig {
 
     public void setEnableKeywordSniff(boolean enableKeywordSniff) {
         this.enableKeywordSniff = enableKeywordSniff;
+    }
+
+    public String getDistribution() {
+        return distribution;
+    }
+
+    public void setDistribution(String distribution) {
+        this.distribution = distribution;
     }
 }

@@ -528,6 +528,11 @@ public class MetadataMgr {
         return connectorTable;
     }
 
+    public Table getTableFromQuery(ConnectContext context, String catalogName, String dbName, String query) {
+        Optional<ConnectorMetadata> connectorMetadata = getOptionalMetadata(catalogName);
+        return connectorMetadata.map(metadata -> metadata.getTableFromQuery(context, dbName, query)).orElse(null);
+    }
+
     public TableVersionRange getTableVersionRange(String dbName, Table table,
                                                   Optional<ConnectorTableVersion> startVersion,
                                                   Optional<ConnectorTableVersion> endVersion) {

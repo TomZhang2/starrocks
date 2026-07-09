@@ -91,6 +91,10 @@ public class OptExternalPartitionPruner {
             LogicalEsScanOperator operator = (LogicalEsScanOperator) logicalScanOperator;
             EsTablePartitions esTablePartitions = operator.getEsTablePartitions();
 
+            if (esTablePartitions == null) {
+                return logicalScanOperator;
+            }
+
             Collection<Long> partitionIds = null;
             try {
                 partitionIds = partitionPrune(operator.getTable(),

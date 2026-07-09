@@ -1843,7 +1843,11 @@ public class PlanFragmentBuilder {
             } catch (UserException e) {
                 throw new StarRocksPlannerException(e.getMessage(), INTERNAL_ERROR);
             }
-            scanNode.setShardScanRanges(scanNode.computeShardLocations(node.getSelectedIndex()));
+            if (scanNode.getEsTable().isQueryTable()) {
+                scanNode.setShardScanRanges(scanNode.computeQueryTableScanRanges());
+            } else {
+                scanNode.setShardScanRanges(scanNode.computeShardLocations(node.getSelectedIndex()));
+            }
 
             context.getScanNodes().add(scanNode);
             PlanFragment fragment =

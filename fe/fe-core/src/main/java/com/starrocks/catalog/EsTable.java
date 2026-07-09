@@ -60,7 +60,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.zip.Adler32;
 
-public class EsTable extends Table implements GsonPostProcessable {
+public class EsTable extends Table implements GsonPostProcessable, PassThroughQueryTable {
     private static final Logger LOG = LogManager.getLogger(EsTable.class);
 
     public static final Set<String> DEFAULT_DOCVALUE_DISABLED_FIELDS = new HashSet<>(Arrays.asList("text"));
@@ -84,6 +84,8 @@ public class EsTable extends Table implements GsonPostProcessable {
     public static final String KEY_WAN_ONLY = "es.nodes.wan.only";
     public static final String KEY_ES_NET_SSL = "es.net.ssl";
     public static final String KEY_TIME_ZONE = "time_zone";
+    public static final String KEY_NATIVE_QUERY = "native_query";
+    public static final String KEY_ES_DISTRIBUTION = "es.distribution";
 
     // tableContext is used for being convenient to persist some configuration parameters uniformly
     @SerializedName(value = "tc")
@@ -139,6 +141,13 @@ public class EsTable extends Table implements GsonPostProcessable {
     private String catalogName = null;
     private String dbName = null;
 
+    @SerializedName(value = "qt")
+    private boolean queryTable;
+
+    private String passThroughQuery;
+
+    private String distribution = "elasticsearch";
+
     public EsTable() {
         super(TableType.ELASTICSEARCH);
     }
@@ -185,6 +194,30 @@ public class EsTable extends Table implements GsonPostProcessable {
 
     public boolean sslEnabled() {
         return sslEnabled;
+    }
+
+    @Override
+    public boolean isQueryTable() {
+        return queryTable;
+    }
+
+    @Override
+    public String getPassThroughQuery() {
+        return passThroughQuery;
+    }
+
+    @Override
+    public void setPassThroughQuery(String query) {
+        this.passThroughQuery = query;
+        this.queryTable = true;
+    }
+
+    public boolean isNativeQuery() {
+        return isQueryTable();
+    }
+
+    public String getDistribution() {
+        return distribution;
     }
 
     private void validate(Map<String, String> properties) throws DdlException {
@@ -315,6 +348,14 @@ public class EsTable extends Table implements GsonPostProcessable {
             timeZone = properties.get(KEY_TIME_ZONE).trim();
         }
 
+        if (properties.containsKey(KEY_ES_DISTRIBUTION)) {
+            distribution = properties.get(KEY_ES_DISTRIBUTION).trim();
+        }
+
+        if (properties.containsKey(KEY_NATIVE_QUERY)) {
+            setPassThroughQuery(PassThroughQueryValidator.normalize(properties.get(KEY_NATIVE_QUERY)));
+        }
+
         Column idColumn = getColumn("_id");
         if (idColumn != null && !(idColumn.getPrimitiveType() == PrimitiveType.VARCHAR
                 || idColumn.getPrimitiveType() == PrimitiveType.CHAR)) {
@@ -336,6 +377,7 @@ public class EsTable extends Table implements GsonPostProcessable {
         tableContext.put("maxDocValueFields", String.valueOf(maxDocValueFields));
         tableContext.put("es.nodes.wan.only", String.valueOf(wanOnly));
         tableContext.put(KEY_ES_NET_SSL, String.valueOf(sslEnabled));
+        tableContext.put(KEY_ES_DISTRIBUTION, distribution);
     }
 
     @Override
@@ -415,6 +457,7 @@ public class EsTable extends Table implements GsonPostProcessable {
         } else {
             sslEnabled = false;
         }
+        distribution = tableContext.getOrDefault(KEY_ES_DISTRIBUTION, "elasticsearch");
     }
 
     public String getHosts() {

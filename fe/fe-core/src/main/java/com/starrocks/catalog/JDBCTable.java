@@ -37,7 +37,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class JDBCTable extends Table {
+public class JDBCTable extends Table implements PassThroughQueryTable {
     private static final Logger LOG = LogManager.getLogger(JDBCTable.class);
 
     private static final String TABLE = "table";
@@ -50,6 +50,8 @@ public class JDBCTable extends Table {
     private String jdbcTable;
     @SerializedName(value = "rn")
     private String resourceName;
+    @SerializedName(value = "qt")
+    private boolean queryTable;
 
     private Map<String, String> connectInfo;
     private String catalogName;
@@ -100,6 +102,26 @@ public class JDBCTable extends Table {
     @Override
     public String getCatalogTableName() {
         return jdbcTable;
+    }
+
+    @Override
+    public boolean isQueryTable() {
+        return queryTable;
+    }
+
+    @Override
+    public void setPassThroughQuery(String query) {
+        jdbcTable = "(" + normalizePassThroughQuery(query) + ") starrocks_query";
+        queryTable = true;
+    }
+
+    @Override
+    public String getPassThroughQuery() {
+        return queryTable ? jdbcTable : null;
+    }
+
+    public static String normalizePassThroughQuery(String query) {
+        return PassThroughQueryValidator.normalize(query);
     }
 
     @Override
@@ -226,7 +248,7 @@ public class JDBCTable extends Table {
             tJDBCTable.setJdbc_driver_checksum(connectInfo.get(JDBCResource.CHECK_SUM));
             tJDBCTable.setJdbc_driver_class(connectInfo.get(JDBCResource.DRIVER_CLASS));
 
-            if (connectInfo.get(JDBC_TABLENAME) != null) {
+            if (connectInfo.get(JDBC_TABLENAME) != null || queryTable) {
                 tJDBCTable.setJdbc_url(uri);
             } else {
                 int delimiterIndex = uri.indexOf("?");
