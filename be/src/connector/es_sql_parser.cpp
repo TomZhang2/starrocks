@@ -44,11 +44,15 @@ Status EsSqlResponseParser::parse(const std::string& response, const std::vector
         return Status::InternalError("ES SQL response contains error");
     }
 
-    if (!doc.HasMember("rows")) {
+    // ES uses "rows", OpenSearch uses "datarows"
+    const char* rows_key = doc.HasMember("rows")      ? "rows"
+                           : doc.HasMember("datarows") ? "datarows"
+                                                       : nullptr;
+    if (rows_key == nullptr) {
         return Status::OK();
     }
 
-    const auto& rows = doc["rows"].GetArray();
+    const auto& rows = doc[rows_key].GetArray();
     const auto& slots = tuple_desc->slots();
     size_t num_columns = chunk->num_columns();
 

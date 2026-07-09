@@ -36,7 +36,16 @@ ESSqlReader::ESSqlReader(const std::vector<TNetworkAddress>& es_hosts,
           _properties(properties),
           _sql_query(sql_query),
           _batch_size(batch_size),
-          _state(state) {}
+          _state(state) {
+    auto it_dist = _properties.find("es.distribution");
+    _sql_base_path = (it_dist != _properties.end() && it_dist->second == "opensearch")
+                             ? "/_plugins/_sql"
+                             : "/_sql";
+    auto it_ssl = _properties.find("es.net.ssl");
+    _url_scheme = (it_ssl != _properties.end() && it_ssl->second == "true")
+                          ? "https"
+                          : "http";
+}
 
 ESSqlReader::~ESSqlReader() {
     if (!_cursor.empty()) {
@@ -45,6 +54,10 @@ ESSqlReader::~ESSqlReader() {
             LOG(WARNING) << "Failed to close ES SQL cursor in destructor: " << st.message();
         }
     }
+}
+
+std::string ESSqlReader::_build_url(const TNetworkAddress& host, const std::string& path) const {
+    return fmt::format("{}://{}:{}{}", _url_scheme, host.hostname, host.port, path);
 }
 
 Status ESSqlReader::open() {
@@ -72,7 +85,7 @@ Status ESSqlReader::open() {
     for (int i = 0; i < _es_hosts.size(); i++) {
         int idx = (_current_host_index + i) % _es_hosts.size();
         const auto& host = _es_hosts[idx];
-        std::string url = fmt::format("http://{}:{}/_sql", host.hostname, host.port);
+        std::string url = _build_url(host, _sql_base_path);
         Status st = _http_post(url, buffer.GetString(), &response);
         if (st.ok()) {
             _current_host_index = idx;
@@ -99,8 +112,12 @@ Status ESSqlReader::open() {
     }
 
     // Parse columns (only present in first response)
-    if (resp.HasMember("columns")) {
-        const auto& cols = resp["columns"].GetArray();
+    // ES uses "columns", OpenSearch uses "schema"
+    const char* columns_key = resp.HasMember("columns")  ? "columns"
+                              : resp.HasMember("schema") ? "schema"
+                                                         : nullptr;
+    if (columns_key != nullptr) {
+        const auto& cols = resp[columns_key].GetArray();
         for (const auto& col : cols) {
             _columns.push_back({col["name"].GetString(), col["type"].GetString()});
         }
@@ -149,7 +166,7 @@ Status ESSqlReader::get_next(std::string* response, bool* eos) {
     for (int i = 0; i < _es_hosts.size(); i++) {
         int idx = (_current_host_index + i) % _es_hosts.size();
         const auto& host = _es_hosts[idx];
-        std::string url = fmt::format("http://{}:{}/_sql", host.hostname, host.port);
+        std::string url = _build_url(host, _sql_base_path);
         Status st = _http_post(url, buffer.GetString(), &resp_str);
         if (st.ok()) {
             _current_host_index = idx;
@@ -210,7 +227,7 @@ Status ESSqlReader::close() {
     for (int i = 0; i < _es_hosts.size(); i++) {
         int idx = (_current_host_index + i) % _es_hosts.size();
         const auto& host = _es_hosts[idx];
-        std::string url = fmt::format("http://{}:{}/_sql/close", host.hostname, host.port);
+        std::string url = _build_url(host, _sql_base_path + "/close");
         Status st = _http_post(url, buffer.GetString(), &response);
         if (st.ok()) {
             return Status::OK();

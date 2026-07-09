@@ -33,9 +33,10 @@ struct EsSqlColumn {
     std::string type;
 };
 
-// Reader for ES SQL (_sql endpoint)
+// Reader for ES/OpenSearch SQL endpoint
 // Unlike ESScanReader (which uses scroll API with per-shard _search),
-// ESSqlReader uses the cluster-level _sql endpoint with cursor pagination.
+// ESSqlReader uses the cluster-level SQL endpoint with cursor pagination.
+// Supports both Elasticsearch (/_sql) and OpenSearch (/_plugins/_sql).
 class ESSqlReader {
 public:
     ESSqlReader(const std::vector<TNetworkAddress>& es_hosts,
@@ -60,12 +61,16 @@ public:
 
 private:
     Status _http_post(const std::string& url, const std::string& body, std::string* response);
+    std::string _build_url(const TNetworkAddress& host, const std::string& path) const;
 
     std::vector<TNetworkAddress> _es_hosts;
     std::map<std::string, std::string> _properties;
     std::string _sql_query;
     int _batch_size;
     [[maybe_unused]] RuntimeState* _state;
+
+    std::string _sql_base_path; // "/_sql" (ES) or "/_plugins/_sql" (OpenSearch)
+    std::string _url_scheme;    // "http" or "https"
 
     std::string _cursor;
     std::vector<EsSqlColumn> _columns;
