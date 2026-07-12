@@ -22,6 +22,8 @@ import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.JDBCResource;
 import com.starrocks.catalog.JDBCTable;
+import com.starrocks.catalog.PartitionKey;
+import com.starrocks.catalog.PassThroughQueryValidator;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.Config;
@@ -31,7 +33,14 @@ import com.starrocks.connector.ConnectorMetadata;
 import com.starrocks.connector.ConnectorTableId;
 import com.starrocks.connector.PartitionInfo;
 import com.starrocks.connector.PartitionUtil;
+import com.starrocks.connector.TableVersionRange;
 import com.starrocks.connector.exception.StarRocksConnectorException;
+import com.starrocks.sql.analyzer.ConnectContext;
+import com.starrocks.sql.optimizer.OptimizerContext;
+import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
+import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
+import com.starrocks.sql.optimizer.statistics.ColumnStatistic;
+import com.starrocks.sql.optimizer.statistics.Statistics;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.apache.logging.log4j.LogManager;
@@ -39,7 +48,9 @@ import org.apache.logging.log4j.Logger;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -216,6 +227,80 @@ public class JDBCMetadata implements ConnectorMetadata {
                         return null;
                     }
                 });
+    }
+
+    @Override
+    public Table getTableFromQuery(ConnectContext context, String dbName, String query) {
+        String normalizedQuery = PassThroughQueryValidator.normalize(query);
+
+        List<Column> fullSchema = probeSchemaFromQuery(normalizedQuery);
+        if (fullSchema.isEmpty()) {
+            throw new StarRocksConnectorException("JDBC native query returned no columns");
+        }
+
+        long tableId = ConnectorTableId.CONNECTOR_ID_GENERATOR.getNextId().asInt();
+        String tableName = "_native_query_" + tableId;
+        try {
+            JDBCTable queryTable = (JDBCTable) schemaResolver.getTable(
+                    tableId, tableName, fullSchema, dbName, catalogName, properties);
+            queryTable.setPassThroughQuery(normalizedQuery);
+            return queryTable;
+        } catch (DdlException e) {
+            throw new StarRocksConnectorException(
+                    "Failed to create JDBC query table: " + e.getMessage(), e);
+        }
+    }
+
+    private List<Column> probeSchemaFromQuery(String normalizedQuery) {
+        String probeSql = "SELECT * FROM (" + normalizedQuery + ") AS starrocks_native_query WHERE 1=0";
+        List<Column> schema = Lists.newArrayList();
+        try (Connection connection = getConnection();
+             Statement stmt = connection.createStatement()) {
+            try (ResultSet rs = stmt.executeQuery(probeSql)) {
+                ResultSetMetaData metaData = rs.getMetaData();
+                int columnCount = metaData.getColumnCount();
+                for (int i = 1; i <= columnCount; i++) {
+                    String columnName = metaData.getColumnLabel(i);
+                    int dataType = metaData.getColumnType(i);
+                    String typeName = metaData.getColumnTypeName(i);
+                    int columnSize = metaData.getPrecision(i);
+                    int digits = metaData.getScale(i);
+                    boolean nullable = metaData.isNullable(i) != ResultSetMetaData.columnNoNulls;
+
+                    Type type = schemaResolver.convertColumnType(dataType, typeName, columnSize, digits);
+                    schema.add(new Column(columnName, type, nullable));
+                }
+            }
+        } catch (SQLException e) {
+            throw new StarRocksConnectorException(
+                    "Failed to infer schema for JDBC native query: " + e.getMessage(), e);
+        }
+        return schema;
+    }
+
+    private static final long DEFAULT_QUERY_TABLE_ROW_COUNT = 1L;
+
+    @Override
+    public Statistics getTableStatistics(OptimizerContext session,
+                                         Table table,
+                                         Map<ColumnRefOperator, Column> columns,
+                                         List<PartitionKey> partitionKeys,
+                                         ScalarOperator predicate,
+                                         long limit,
+                                         TableVersionRange tableVersionRange) {
+        Statistics.Builder builder = Statistics.builder();
+        JDBCTable jdbcTable = (JDBCTable) table;
+        if (jdbcTable.isQueryTable()) {
+            builder.setOutputRowCount(DEFAULT_QUERY_TABLE_ROW_COUNT);
+        }
+        for (Map.Entry<ColumnRefOperator, Column> entry : columns.entrySet()) {
+            builder.addColumnStatistic(entry.getKey(), ColumnStatistic.builder()
+                    .setAverageRowSize(entry.getValue().getType().getTypeSize())
+                    .setNullsFraction(0)
+                    .setType(ColumnStatistic.StatisticType.ESTIMATE)
+                    .build());
+        }
+        return builder.build();
     }
 
     @Override

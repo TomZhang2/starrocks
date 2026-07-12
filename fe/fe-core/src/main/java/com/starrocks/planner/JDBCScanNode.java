@@ -52,8 +52,12 @@ public class JDBCScanNode extends ScanNode {
     public JDBCScanNode(PlanNodeId id, TupleDescriptor desc, JDBCTable tbl) {
         super(id, desc, "SCAN JDBC");
         table = tbl;
-        String objectIdentifier = getIdentifierSymbol();
-        tableName = objectIdentifier + tbl.getCatalogTableName() + objectIdentifier;
+        if (tbl.isQueryTable()) {
+            tableName = tbl.getCatalogTableName();
+        } else {
+            String objectIdentifier = getIdentifierSymbol();
+            tableName = objectIdentifier + tbl.getCatalogTableName() + objectIdentifier;
+        }
     }
 
     @Override
