@@ -1,0 +1,57 @@
+{
+  "type": "index_parallel",
+  "spec": {
+    "dataSchema": {
+      "dataSource": "user_events",
+      "timestampSpec": {
+        "column": "event_time",
+        "format": "iso"
+      },
+      "dimensionsSpec": {
+        "dimensions": [
+          "user_id",
+          "device",
+          "os",
+          "channel",
+          "event_type",
+          "product_id",
+          "product_cat",
+          "country",
+          "province"
+        ]
+      },
+      "metricsSpec": [
+        { "type": "count", "name": "events" },
+        { "type": "longSum", "name": "sum_quantity", "fieldName": "quantity" },
+        { "type": "doubleSum", "name": "sum_amount", "fieldName": "amount" },
+        { "type": "thetaSketch", "name": "uv", "fieldName": "user_id", "isInputThetaSketch": false, "size": 16384 }
+      ],
+      "granularitySpec": {
+        "type": "uniform",
+        "segmentGranularity": "DAY",
+        "queryGranularity": "minute",
+        "rollup": true,
+        "intervals": ["2024-06-01/2024-06-08"]
+      }
+    },
+    "ioConfig": {
+      "type": "index_parallel",
+      "inputSource": {
+        "type": "local",
+        "baseDir": "/data/user_events/",
+        "filter": "*.json"
+      },
+      "inputFormat": { "type": "json" }
+    },
+    "tuningConfig": {
+      "type": "index_parallel",
+      "partitionsSpec": {
+        "type": "dynamic",
+        "maxRowsPerSegment": 5000000
+      },
+      "maxRowsInMemory": 100000,
+      "maxBytesInMemory": 104857600,
+      "maxNumConcurrentSubTasks": 4
+    }
+  }
+}
